@@ -3,8 +3,10 @@ import {
   Braces,
   Check,
   ChevronDown,
+  ChevronUp,
   CircleHelp,
   Code2,
+  Columns2,
   Download,
   FileMusic,
   FilePlus2,
@@ -12,17 +14,20 @@ import {
   Gauge,
   ListMusic,
   LoaderCircle,
+  MousePointer2,
   Music2,
   PanelLeftClose,
   Play,
   Redo2,
   Save,
+  Trash2,
   Undo2,
   WandSparkles,
   ZoomIn,
   ZoomOut,
+  X,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 
 type ScoreDocument = {
   id: string;
@@ -33,6 +38,20 @@ type ScoreDocument = {
 };
 
 type RpcResult = { files: string[]; logs: string; midi?: string };
+type ViewMode = "score" | "source" | "both";
+
+type SelectedNote = {
+  documentId: string;
+  href: string;
+  start: number;
+  end: number;
+  base: string;
+  accidental: string;
+  octave: string;
+  duration: string;
+  dots: string;
+  line: number;
+};
 
 const DEFAULT_SOURCE = String.raw`\version "2.26.0"
 
@@ -103,6 +122,66 @@ const INSTRUMENT_KO: Record<string, string> = {
   Piano: "피아노",
 };
 
+const NOTE_TOKEN_PATTERN = /(?<![A-Za-z\\])([a-g])((?:isis|eses|is|es)?)([',]*)(128|64|32|16|8|4|2|1)?(\.*)(?=[^A-Za-z]|$)/g;
+
+function findSourceNote(source: string, href: string, documentId: string): SelectedNote | null {
+  const location = href.match(/\.ly:(\d+):(\d+):(\d+)$/);
+  if (!location) return null;
+
+  const lines = source.split("\n");
+  const renderedLine = Number(location[1]);
+  const targetColumn = Number(location[2]);
+  const sourceLineIndex = Math.max(0, Math.min(lines.length - 1, renderedLine - 2));
+  const candidateLines = [sourceLineIndex, sourceLineIndex - 1, sourceLineIndex + 1]
+    .filter((line, index, all) => line >= 0 && line < lines.length && all.indexOf(line) === index);
+
+  let best: (SelectedNote & { distance: number }) | null = null;
+  for (const lineIndex of candidateLines) {
+    const line = lines[lineIndex];
+    const lineOffset = lines.slice(0, lineIndex).reduce((total, value) => total + value.length + 1, 0);
+    NOTE_TOKEN_PATTERN.lastIndex = 0;
+    let note: RegExpExecArray | null;
+    while ((note = NOTE_TOKEN_PATTERN.exec(line))) {
+      const distance = lineIndex === sourceLineIndex
+        ? Math.min(Math.abs(note.index - targetColumn), Math.abs(note.index + note[0].length - targetColumn))
+        : 1000 + Math.abs(lineIndex - sourceLineIndex) * 100;
+      if (!best || distance < best.distance) {
+        best = {
+          documentId,
+          href,
+          start: lineOffset + note.index,
+          end: lineOffset + note.index + note[0].length,
+          base: note[1],
+          accidental: note[2] ?? "",
+          octave: note[3] ?? "",
+          duration: note[4] ?? "",
+          dots: note[5] ?? "",
+          line: lineIndex + 1,
+          distance,
+        };
+      }
+    }
+  }
+
+  if (!best) return null;
+  return {
+    documentId: best.documentId,
+    href: best.href,
+    start: best.start,
+    end: best.end,
+    base: best.base,
+    accidental: best.accidental,
+    octave: best.octave,
+    duration: best.duration,
+    dots: best.dots,
+    line: best.line,
+  };
+}
+
+function selectedNoteToken(note: SelectedNote) {
+  return `${note.base}${note.accidental}${note.octave}${note.duration}${note.dots}`;
+}
+
 function makePartDocuments(source: string): ScoreDocument[] {
   const scoreIndex = source.lastIndexOf("\\score");
   if (scoreIndex < 0) return [];
@@ -150,12 +229,15 @@ export function LilyEditor() {
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const [toast, setToast] = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [viewMode, setViewMode] = useState<ViewMode>("score");
+  const [selectedNote, setSelectedNote] = useState<SelectedNote | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const lineRef = useRef<HTMLPreElement>(null);
   const socketRef = useRef<WebSocket | null>(null);
   const pendingRef = useRef(new Map<string, { resolve: (value: RpcResult) => void; reject: (reason: Error) => void; timer: number }>());
   const compileVersionRef = useRef(0);
+  const selectedAnchorRef = useRef<Element | null>(null);
 
   const activeDocument = useMemo(
     () => documents.find((document) => document.id === activeId) ?? documents[0],
@@ -245,6 +327,7 @@ export function LilyEditor() {
       if (!result.files?.length || !result.files[0].trim()) throw new Error(result.logs || "출력된 악보가 없습니다.");
       setPages(result.files.map((page) => DOMPurify.sanitize(page, {
         USE_PROFILES: { svg: true, svgFilters: true },
+        ALLOW_UNKNOWN_PROTOCOLS: true,
         ADD_TAGS: ["use"],
         ADD_ATTR: ["xlink:href", "href", "pointer-events"],
       })));
@@ -262,6 +345,31 @@ export function LilyEditor() {
     const timer = window.setTimeout(compile, 850);
     return () => window.clearTimeout(timer);
   }, [activeDocument, compile, connection]);
+
+  const clearSelectedNote = useCallback(() => {
+    selectedAnchorRef.current?.classList.remove("is-selected");
+    selectedAnchorRef.current = null;
+    setSelectedNote(null);
+  }, []);
+
+  useEffect(() => {
+    clearSelectedNote();
+  }, [activeId, clearSelectedNote]);
+
+  useEffect(() => {
+    if (!selectedNote || viewMode === "source") return;
+    const anchors = document.querySelectorAll(".score-page a");
+    const anchor = Array.from(anchors).find((candidate) => {
+      const href = candidate.getAttribute("href")
+        ?? candidate.getAttribute("xlink:href")
+        ?? candidate.getAttributeNS("http://www.w3.org/1999/xlink", "href");
+      return href === selectedNote.href;
+    });
+    if (!anchor) return;
+    selectedAnchorRef.current?.classList.remove("is-selected");
+    anchor.classList.add("is-selected");
+    selectedAnchorRef.current = anchor;
+  }, [pages, selectedNote, viewMode]);
 
   const saveProject = useCallback(() => {
     localStorage.setItem("weblily-project-v1", JSON.stringify({ documents, activeId }));
@@ -285,7 +393,74 @@ export function LilyEditor() {
   }, [compile, saveProject]);
 
   const updateCode = (code: string) => {
+    clearSelectedNote();
     setDocuments((current) => current.map((document) => document.id === activeId ? { ...document, code } : document));
+  };
+
+  const replaceSelectedNote = (updates: Partial<Pick<SelectedNote, "base" | "accidental" | "octave" | "duration" | "dots">>) => {
+    if (!selectedNote) return;
+    const documentToEdit = documents.find((document) => document.id === selectedNote.documentId);
+    if (!documentToEdit || documentToEdit.code.slice(selectedNote.start, selectedNote.end) !== selectedNoteToken(selectedNote)) {
+      clearSelectedNote();
+      setToast("소스가 변경되어 음표를 다시 선택해 주세요");
+      window.setTimeout(() => setToast(""), 1800);
+      return;
+    }
+
+    const nextNote = { ...selectedNote, ...updates };
+    const nextToken = selectedNoteToken(nextNote);
+    setDocuments((current) => current.map((document) => document.id === selectedNote.documentId
+      ? { ...document, code: `${document.code.slice(0, selectedNote.start)}${nextToken}${document.code.slice(selectedNote.end)}` }
+      : document));
+    setSelectedNote({ ...nextNote, end: nextNote.start + nextToken.length });
+  };
+
+  const adjustSelectedOctave = (direction: -1 | 1) => {
+    if (!selectedNote) return;
+    let octave = selectedNote.octave;
+    if (direction === 1) octave = octave.endsWith(",") ? octave.slice(0, -1) : `${octave}'`;
+    else octave = octave.endsWith("'") ? octave.slice(0, -1) : `${octave},`;
+    replaceSelectedNote({ octave });
+  };
+
+  const replaceSelectedWithRest = () => {
+    if (!selectedNote) return;
+    const rest = `r${selectedNote.duration || "4"}${selectedNote.dots}`;
+    setDocuments((current) => current.map((document) => document.id === selectedNote.documentId
+      ? { ...document, code: `${document.code.slice(0, selectedNote.start)}${rest}${document.code.slice(selectedNote.end)}` }
+      : document));
+    clearSelectedNote();
+  };
+
+  const handleScoreClick = (event: ReactMouseEvent<HTMLDivElement>) => {
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    const anchor = target.closest("a");
+    if (!anchor) return;
+    const href = anchor.getAttribute("href")
+      ?? anchor.getAttribute("xlink:href")
+      ?? anchor.getAttributeNS("http://www.w3.org/1999/xlink", "href");
+    if (!href?.startsWith("textedit:")) return;
+    event.preventDefault();
+    event.stopPropagation();
+
+    const note = findSourceNote(activeDocument.code, href, activeDocument.id);
+    if (!note) {
+      setToast("이 기호는 소스 보기에서 직접 편집해 주세요");
+      window.setTimeout(() => setToast(""), 1800);
+      return;
+    }
+
+    selectedAnchorRef.current?.classList.remove("is-selected");
+    anchor.classList.add("is-selected");
+    selectedAnchorRef.current = anchor;
+    setSelectedNote(note);
+    if (viewMode === "both") {
+      window.requestAnimationFrame(() => {
+        textareaRef.current?.focus();
+        textareaRef.current?.setSelectionRange(note.start, note.end);
+      });
+    }
   };
 
   const insertSnippet = (value: string) => {
@@ -375,6 +550,11 @@ music = \relative c' {
         </div>
         <div className="document-title"><span>{activeDocument.name}</span><span className="saved-indicator"><Check size={12} /> 로컬 저장</span></div>
         <div className="top-actions">
+          <div className="view-switch" role="group" aria-label="보기 전환">
+            <button className={viewMode === "score" ? "active" : ""} aria-pressed={viewMode === "score"} onClick={() => setViewMode("score")} title="악보만 보기"><FileMusic size={14} /><span>악보</span></button>
+            <button className={viewMode === "source" ? "active" : ""} aria-pressed={viewMode === "source"} onClick={() => setViewMode("source")} title="소스만 보기"><Code2 size={14} /><span>소스</span></button>
+            <button className={viewMode === "both" ? "active" : ""} aria-pressed={viewMode === "both"} onClick={() => setViewMode("both")} title="악보와 소스 같이 보기"><Columns2 size={14} /><span>둘 다</span></button>
+          </div>
           <span className={`connection ${connection}`}><i />{connection === "online" ? "렌더러 연결됨" : connection === "connecting" ? "연결 중" : "오프라인"}</span>
           <button className="subtle-button" onClick={saveProject}><Save size={15} />저장</button>
           <button className="primary-button" onClick={() => downloadPdf(activeDocument)} disabled={downloadingId !== null || connection !== "online"}>
@@ -383,7 +563,7 @@ music = \relative c' {
         </div>
       </header>
 
-      <section className={`workspace ${sidebarOpen ? "with-sidebar" : "without-sidebar"}`}>
+      <section className={`workspace ${sidebarOpen ? "with-sidebar" : "without-sidebar"} mode-${viewMode}`}>
         {sidebarOpen && (
           <aside className="project-sidebar">
             <div className="side-heading"><span>프로젝트</span><button className="icon-button" aria-label="새 파일" onClick={newProject}><FilePlus2 size={16} /></button></div>
@@ -411,7 +591,7 @@ music = \relative c' {
           </aside>
         )}
 
-        <section className="editor-pane">
+        {viewMode !== "score" && <section className="editor-pane">
           <div className="pane-header editor-header">
             <div className="pane-title"><Code2 size={15} /><strong>{activeDocument.kind === "score" ? "score.ly" : `${activeDocument.instrument?.toLowerCase() ?? "part"}.ly`}</strong><span>LilyPond</span></div>
             <div className="pane-actions">
@@ -430,11 +610,11 @@ music = \relative c' {
             <textarea ref={textareaRef} value={activeDocument.code} onChange={(event) => updateCode(event.target.value)} onScroll={(event) => { if (lineRef.current) lineRef.current.scrollTop = event.currentTarget.scrollTop; }} spellCheck={false} aria-label="LilyPond 코드 편집기" wrap="off" />
           </div>
           <div className="editor-statusbar"><span>{activeDocument.code.split("\n").length} lines</span><span>UTF-8</span><span>Spaces: 2</span><span>LilyPond 2.26</span></div>
-        </section>
+        </section>}
 
-        <section className="preview-pane">
+        {viewMode !== "source" && <section className="preview-pane">
           <div className="pane-header preview-header">
-            <div className="pane-title"><FileMusic size={15} /><strong>악보 미리보기</strong><span>{pages.length || 1} page</span></div>
+            <div className="pane-title"><FileMusic size={15} /><strong>악보 미리보기</strong><span>{pages.length || 1} page</span><span className="score-edit-hint"><MousePointer2 size={12} />음표를 클릭해 편집</span></div>
             <div className="preview-actions">
               <button className="icon-button" aria-label="축소" onClick={() => setZoom((value) => Math.max(50, value - 10))}><ZoomOut size={15} /></button>
               <span>{zoom}%</span>
@@ -445,9 +625,47 @@ music = \relative c' {
               </button>
             </div>
           </div>
+          {selectedNote?.documentId === activeId && (
+            <aside className="note-inspector" aria-label="선택한 음표 편집">
+              <div className="note-inspector-head">
+                <span><MousePointer2 size={13} />선택한 음표</span>
+                <strong>{selectedNoteToken(selectedNote)}</strong>
+                <small>{selectedNote.line}행</small>
+                <button aria-label="음표 편집기 닫기" onClick={clearSelectedNote}><X size={14} /></button>
+              </div>
+              <div className="note-control-row">
+                <span>음정</span>
+                <div className="note-choice pitch-choice">
+                  {(["c", "d", "e", "f", "g", "a", "b"] as const).map((pitch, index) => (
+                    <button key={pitch} className={selectedNote.base === pitch ? "active" : ""} onClick={() => replaceSelectedNote({ base: pitch })} title={`${["도", "레", "미", "파", "솔", "라", "시"][index]} (${pitch})`}>{["도", "레", "미", "파", "솔", "라", "시"][index]}</button>
+                  ))}
+                </div>
+              </div>
+              <div className="note-control-row compact">
+                <span>임시표</span>
+                <div className="note-choice">
+                  <button className={selectedNote.accidental === "es" ? "active" : ""} onClick={() => replaceSelectedNote({ accidental: "es" })}>♭</button>
+                  <button className={selectedNote.accidental === "" ? "active" : ""} onClick={() => replaceSelectedNote({ accidental: "" })}>♮</button>
+                  <button className={selectedNote.accidental === "is" ? "active" : ""} onClick={() => replaceSelectedNote({ accidental: "is" })}>♯</button>
+                </div>
+                <span>옥타브</span>
+                <div className="note-stepper">
+                  <button onClick={() => adjustSelectedOctave(-1)} aria-label="한 옥타브 내리기"><ChevronDown size={14} /></button>
+                  <button onClick={() => adjustSelectedOctave(1)} aria-label="한 옥타브 올리기"><ChevronUp size={14} /></button>
+                </div>
+              </div>
+              <div className="note-control-row compact">
+                <span>길이</span>
+                <div className="note-choice duration-choice">
+                  {["1", "2", "4", "8", "16"].map((duration) => <button key={duration} className={selectedNote.duration === duration ? "active" : ""} onClick={() => replaceSelectedNote({ duration })}>{duration}</button>)}
+                </div>
+                <button className="rest-button" onClick={replaceSelectedWithRest}><Trash2 size={13} />쉼표로</button>
+              </div>
+            </aside>
+          )}
           <div className="preview-canvas">
             {pages.length ? (
-              <div className="score-pages" style={{ width: `${zoom}%` }}>
+              <div className="score-pages" style={{ width: `${zoom}%` }} onClick={handleScoreClick}>
                 {pages.map((page, index) => <article className="score-page" key={`${activeId}-${index}`} dangerouslySetInnerHTML={{ __html: page }} />)}
               </div>
             ) : (
@@ -467,7 +685,7 @@ music = \relative c' {
             </div>
             {compileState === "error" && <pre className="compile-logs">{logs}</pre>}
           </div>
-        </section>
+        </section>}
       </section>
       {toast && <div className="toast" role="status">{toast}</div>}
     </main>
