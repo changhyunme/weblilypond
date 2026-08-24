@@ -104,24 +104,18 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 
 .preview-actions { gap: 3px; }
 .preview-actions > span { min-width: 32px; color: #747974; font-size: 9px; text-align: center; }
+.surface-switch { height: 27px; display: flex; align-items: center; padding: 2px; margin-right: 4px; border: 1px solid #d8dad4; border-radius: 6px; background: #e9ebe6; }
+.surface-switch button { height: 21px; padding: 0 7px; border: 0; border-radius: 4px; color: #797e79; background: transparent; cursor: pointer; font-size: 8px; font-weight: 700; }
+.surface-switch button.active { color: #1e6249; background: #fff; box-shadow: 0 1px 2px rgba(28,37,32,.12); }
 .action-divider { width: 1px !important; min-width: 1px !important; height: 19px; margin: 0 5px; background: #dedfd9; }
 .compile-button { height: 27px; padding: 0 10px; gap: 6px; border-radius: 6px; color: #fff; background: var(--accent); font-size: 10px; font-weight: 650; }
 .preview-canvas { flex: 1; min-height: 0; overflow: auto; padding: 28px 28px 42px; background-color: #e8e8e3; background-image: radial-gradient(#cfd0ca 0.7px, transparent 0.7px); background-size: 14px 14px; }
+.preview-canvas.is-live { padding: 0; background: #e9e5de; }
+.live-score-stage { min-width: 680px; max-width: 1040px; margin: 0 auto; transition: width .18s ease; }
 .score-pages { min-width: 430px; max-width: 860px; margin: 0 auto; transition: width .18s ease; user-select: none; }
 .score-page { width: 100%; min-height: 480px; margin: 0 auto 24px; padding: 4% 3%; overflow: hidden; background: var(--paper); box-shadow: 0 2px 4px rgba(27,32,29,.08), 0 12px 36px rgba(27,32,29,.12); }
 .score-page svg { width: 100%; height: auto; display: block; }
-.score-page svg use, .score-page svg path { pointer-events: none; }
-.score-page a rect[pointer-events="all"] { cursor: ns-resize; touch-action: none; transition: fill .12s ease, stroke .12s ease; }
-.score-pages.is-dragging, .score-pages.is-dragging a rect[pointer-events="all"] { cursor: grabbing; }
-.score-page a:hover rect[pointer-events="all"] { fill: rgba(55, 145, 103, .13) !important; stroke: rgba(31, 106, 80, .45) !important; stroke-width: .55px; }
-.score-page a.is-selected rect[pointer-events="all"] { fill: rgba(47, 150, 104, .2) !important; stroke: #1f6a50 !important; stroke-width: .8px; }
-.optimistic-note-preview { pointer-events: none; filter: drop-shadow(0 1px 1px rgba(31,106,80,.18)); }
-.optimistic-note-symbol ellipse, .optimistic-note-symbol circle { fill: #1f6a50; stroke: #164d3b; stroke-width: .45px; }
-.optimistic-note-symbol ellipse.is-hollow { fill: #fffef9; stroke-width: 1px; }
-.optimistic-note-symbol line, .optimistic-note-symbol path { fill: none; stroke: #1f6a50; stroke-width: 1.05px; stroke-linecap: round; pointer-events: none; }
-.optimistic-note-symbol text { fill: #1f6a50; font: 11px Georgia, "Times New Roman", serif; font-weight: 700; }
-.optimistic-note-label rect { fill: #1f6a50; stroke: #fff; stroke-width: .6px; }
-.optimistic-note-label text { fill: #fff; font: 7px ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .01em; }
+.score-page a { pointer-events: none; }
 .note-inspector { position: absolute; z-index: 3; top: 55px; right: 18px; width: min(410px, calc(100% - 36px)); padding: 10px; border: 1px solid #cfd6cf; border-radius: 11px; background: rgba(255,255,251,.97); box-shadow: 0 14px 42px rgba(32,43,36,.19); backdrop-filter: blur(8px); }
 .note-inspector-head { height: 27px; display: flex; align-items: center; gap: 7px; padding: 0 1px 7px; border-bottom: 1px solid #e4e6e1; }
 .note-inspector-head > span { display: flex; align-items: center; gap: 5px; color: #607069; font-size: 9px; font-weight: 700; }
@@ -177,6 +171,7 @@ button:disabled { opacity: .55; cursor: not-allowed; }
   .preview-pane { min-height: 65vh; }
   .preview-canvas { min-height: 52vh; padding: 18px; }
   .score-pages { min-width: 390px; }
+  .live-score-stage { min-width: 620px; }
   .note-inspector { top: 51px; right: 10px; width: calc(100% - 20px); }
   .note-control-row.compact { grid-template-columns: 42px minmax(0, 1fr); }
   .note-control-row.compact > span:nth-of-type(2) { margin-top: 2px; }

@@ -1,0 +1,227 @@
+.live-score {
+  width: 100%;
+  min-width: 0;
+  padding: clamp(12px, 2.2vw, 28px);
+  overflow: auto;
+  background:
+    radial-gradient(circle at 18% 0%, rgba(171, 137, 86, 0.1), transparent 28%),
+    #e9e5de;
+  box-sizing: border-box;
+}
+
+.live-score__page {
+  display: block;
+  width: 100%;
+  height: auto;
+  min-width: 680px;
+  color: #181715;
+  filter: drop-shadow(0 15px 24px rgba(38, 31, 22, 0.14));
+  user-select: none;
+  touch-action: none;
+}
+
+.live-score__paper {
+  fill: #fffefb;
+  stroke: rgba(57, 48, 37, 0.12);
+  stroke-width: 1;
+}
+
+.live-score__title,
+.live-score__subtitle,
+.live-score__composer,
+.live-score__tempo,
+.live-score__staff-name,
+.live-score__measure-number,
+.live-score__empty {
+  fill: #24211d;
+  font-family: "Iowan Old Style", "Times New Roman", serif;
+}
+
+.live-score__title {
+  font-size: 28px;
+  font-weight: 650;
+  text-anchor: middle;
+  letter-spacing: 0.015em;
+}
+
+.live-score__subtitle {
+  font-size: 14px;
+  text-anchor: middle;
+  fill: #6d665d;
+}
+
+.live-score__composer {
+  font-size: 14px;
+  text-anchor: end;
+}
+
+.live-score__tempo {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.live-score__staff-name {
+  font-size: 14px;
+  font-weight: 600;
+  text-anchor: end;
+}
+
+.live-score__staff-line,
+.live-score__barline,
+.live-score__ledger,
+.live-score__stem {
+  stroke: currentColor;
+  vector-effect: non-scaling-stroke;
+}
+
+.live-score__staff-line {
+  stroke-width: 0.85;
+}
+
+.live-score__barline {
+  stroke-width: 1;
+}
+
+.live-score__barline.is-final {
+  stroke-width: 2.2;
+}
+
+.live-score__measure-number {
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-size: 10px;
+  fill: #8c857b;
+}
+
+.live-score__clef,
+.live-score__accidental,
+.live-score__rest-symbol text {
+  fill: currentColor;
+  font-family: "Noto Music", "Bravura Text", "Segoe UI Symbol", serif;
+}
+
+.live-score__clef {
+  font-size: 54px;
+  text-anchor: middle;
+}
+
+.live-score__clef.is-bass {
+  font-size: 42px;
+}
+
+.live-score__time-signature text {
+  fill: currentColor;
+  font-family: "Iowan Old Style", "Times New Roman", serif;
+  font-size: 14px;
+  font-weight: 750;
+  text-anchor: middle;
+}
+
+.live-score__event {
+  color: #171614;
+  cursor: pointer;
+  outline: none;
+}
+
+.live-score__note {
+  cursor: ns-resize;
+  will-change: transform;
+}
+
+.live-score__event:focus-visible .live-score__hit-target,
+.live-score__event.is-selected .live-score__hit-target {
+  fill: rgba(190, 96, 53, 0.11);
+  stroke: #b85d34;
+  stroke-width: 1.5;
+  stroke-dasharray: 3 2;
+}
+
+.live-score__event.is-dragging {
+  cursor: grabbing;
+  filter: drop-shadow(0 4px 3px rgba(79, 39, 18, 0.24));
+}
+
+.live-score__event.is-dragging .live-score__hit-target {
+  fill: rgba(190, 96, 53, 0.16);
+}
+
+.live-score__hit-target {
+  fill: transparent;
+  stroke: transparent;
+  vector-effect: non-scaling-stroke;
+}
+
+.live-score__note-symbol ellipse,
+.live-score__note-symbol circle,
+.live-score__rest-symbol rect,
+.live-score__rest-symbol circle {
+  fill: currentColor;
+}
+
+.live-score__note-symbol ellipse.is-hollow {
+  fill: #fffefb;
+  stroke: currentColor;
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+
+.live-score__stem,
+.live-score__ledger {
+  stroke-width: 1.45;
+}
+
+.live-score__ledger {
+  stroke-width: 1;
+}
+
+.live-score__flag {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.4;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.live-score__accidental {
+  font-size: 20px;
+  text-anchor: middle;
+}
+
+.live-score__rest-symbol text {
+  font-size: 29px;
+  text-anchor: middle;
+}
+
+.live-score__drag-label {
+  display: none;
+  paint-order: stroke;
+  fill: #9c4826;
+  stroke: #fffefb;
+  stroke-width: 4px;
+  stroke-linejoin: round;
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-size: 10px;
+  font-weight: 750;
+  pointer-events: none;
+}
+
+.live-score__empty {
+  font-size: 16px;
+  text-anchor: middle;
+  fill: #817a71;
+}
+
+@media (max-width: 760px) {
+  .live-score {
+    padding: 10px;
+  }
+
+  .live-score__page {
+    min-width: 620px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .live-score__note {
+    will-change: auto;
+  }
+}
