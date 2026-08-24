@@ -18,7 +18,7 @@ export default defineConfig({
       config: {
         name: "weblilypond",
         main: "./worker/index.ts",
-        compatibility_date: "2026-08-24",
+        compatibility_date: "2026-05-22",
         compatibility_flags: ["nodejs_compat"],
         assets: { binding: "ASSETS", not_found_handling: "single-page-application" },
         d1_databases: d1 ? [{ binding: d1, database_name: "weblilypond", database_id: "00000000-0000-4000-8000-000000000000" }] : [],
