@@ -27,7 +27,7 @@ import {
   ZoomOut,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 
 type ScoreDocument = {
   id: string;
@@ -51,6 +51,13 @@ type SelectedNote = {
   duration: string;
   dots: string;
   line: number;
+};
+
+type NoteDrag = {
+  pointerId: number;
+  startY: number;
+  note: SelectedNote;
+  steps: number;
 };
 
 const DEFAULT_SOURCE = String.raw`\version "2.26.0"
@@ -123,6 +130,168 @@ const INSTRUMENT_KO: Record<string, string> = {
 };
 
 const NOTE_TOKEN_PATTERN = /(?<![A-Za-z\\])([a-g])((?:isis|eses|is|es)?)([',]*)(128|64|32|16|8|4|2|1)?(\.*)(?=[^A-Za-z]|$)/g;
+const PITCHES = ["c", "d", "e", "f", "g", "a", "b"] as const;
+
+function octaveLevel(markers: string) {
+  return Array.from(markers).reduce((level, marker) => level + (marker === "'" ? 1 : -1), 0);
+}
+
+function octaveMarkers(level: number) {
+  return level > 0 ? "'".repeat(level) : ",".repeat(Math.abs(level));
+}
+
+function transposeNote(note: SelectedNote, steps: number): SelectedNote {
+  const pitchIndex = PITCHES.indexOf(note.base as (typeof PITCHES)[number]);
+  const nextPitchIndex = ((pitchIndex + steps) % PITCHES.length + PITCHES.length) % PITCHES.length;
+  const octaveChange = Math.trunc(steps / PITCHES.length);
+  return {
+    ...note,
+    base: PITCHES[nextPitchIndex],
+    octave: octaveMarkers(octaveLevel(note.octave) + octaveChange),
+  };
+}
+
+function noteVisualStepDelta(from: SelectedNote, to: SelectedNote) {
+  const fromIndex = PITCHES.indexOf(from.base as (typeof PITCHES)[number]);
+  const toIndex = PITCHES.indexOf(to.base as (typeof PITCHES)[number]);
+  let pitchDelta = toIndex - fromIndex;
+  if (pitchDelta > 3) pitchDelta -= 7;
+  if (pitchDelta < -3) pitchDelta += 7;
+  return pitchDelta + (octaveLevel(to.octave) - octaveLevel(from.octave)) * 7;
+}
+
+function createOptimisticNotePreview(anchor: Element, fromNote: SelectedNote, note: SelectedNote, verticalSteps: number) {
+  const svg = anchor.closest("svg");
+  const hitRect = anchor.querySelector("rect");
+  if (!(svg instanceof SVGSVGElement) || !(hitRect instanceof SVGRectElement)) return () => {};
+
+  const x = Number(hitRect.getAttribute("x"));
+  const y = Number(hitRect.getAttribute("y"));
+  const width = Number(hitRect.getAttribute("width"));
+  const height = Number(hitRect.getAttribute("height"));
+  if (![x, y, width, height].every(Number.isFinite)) return () => {};
+
+  const namespace = "http://www.w3.org/2000/svg";
+  const overlay = document.createElementNS(namespace, "g");
+  overlay.classList.add("optimistic-note-preview");
+  overlay.setAttribute("pointer-events", "none");
+
+  const siblings = Array.from(svg.children);
+  const anchorIndex = siblings.indexOf(anchor);
+  const hidden: Array<{ element: SVGGraphicsElement; opacity: string }> = [];
+  const verticalShift = -verticalSteps * height * 0.46;
+  const structuralChange = fromNote.duration !== note.duration
+    || fromNote.accidental !== note.accidental
+    || fromNote.dots !== note.dots
+    || note.base === "r";
+
+  if ((verticalSteps !== 0 || structuralChange) && anchorIndex >= 0) {
+    for (let index = Math.max(0, anchorIndex - 9); index <= Math.min(siblings.length - 1, anchorIndex + 7); index += 1) {
+      const candidate = siblings[index];
+      if (candidate === anchor || candidate.tagName.toLowerCase() === "a" || !(candidate instanceof SVGGraphicsElement)) continue;
+      try {
+        const box = candidate.getBBox();
+        const closeToNote = box.width < 42
+          && box.height < 72
+          && box.x + box.width >= x - 13
+          && box.x <= x + width + 13
+          && box.y + box.height >= y - 34
+          && box.y <= y + height + 12;
+        if (!closeToNote) continue;
+        if (!structuralChange) overlay.appendChild(candidate.cloneNode(true));
+        hidden.push({ element: candidate, opacity: candidate.style.opacity });
+        candidate.style.opacity = "0.16";
+      } catch {
+        // Some SVG nodes do not expose a measurable box; they are safe to skip.
+      }
+    }
+    overlay.setAttribute("transform", `translate(0 ${verticalShift})`);
+  }
+
+  if (structuralChange) {
+    const symbol = document.createElementNS(namespace, "g");
+    symbol.classList.add("optimistic-note-symbol");
+    const centerX = x + width / 2;
+    const centerY = y + height / 2;
+
+    if (note.base === "r") {
+      const rest = document.createElementNS(namespace, "text");
+      rest.setAttribute("x", String(centerX));
+      rest.setAttribute("y", String(centerY + 3));
+      rest.setAttribute("text-anchor", "middle");
+      rest.textContent = `r${note.duration || "4"}`;
+      symbol.appendChild(rest);
+    } else {
+      if (note.accidental) {
+        const accidental = document.createElementNS(namespace, "text");
+        accidental.setAttribute("x", String(centerX - width * 1.05));
+        accidental.setAttribute("y", String(centerY + 3));
+        accidental.setAttribute("text-anchor", "middle");
+        accidental.textContent = note.accidental.includes("is") ? "♯" : "♭";
+        symbol.appendChild(accidental);
+      }
+
+      const notehead = document.createElementNS(namespace, "ellipse");
+      const hollow = note.duration === "1" || note.duration === "2";
+      notehead.setAttribute("cx", String(centerX));
+      notehead.setAttribute("cy", String(centerY));
+      notehead.setAttribute("rx", String(note.duration === "1" ? width * 0.58 : width * 0.48));
+      notehead.setAttribute("ry", String(height * 0.35));
+      notehead.setAttribute("transform", `rotate(-16 ${centerX} ${centerY})`);
+      notehead.classList.toggle("is-hollow", hollow);
+      symbol.appendChild(notehead);
+
+      if (note.duration !== "1") {
+        const stem = document.createElementNS(namespace, "line");
+        stem.setAttribute("x1", String(centerX + width * 0.42));
+        stem.setAttribute("x2", String(centerX + width * 0.42));
+        stem.setAttribute("y1", String(centerY));
+        stem.setAttribute("y2", String(centerY - height * 3.1));
+        symbol.appendChild(stem);
+        const flagCount = note.duration === "16" ? 2 : note.duration === "8" ? 1 : 0;
+        for (let flagIndex = 0; flagIndex < flagCount; flagIndex += 1) {
+          const flag = document.createElementNS(namespace, "path");
+          const stemX = centerX + width * 0.42;
+          const stemTop = centerY - height * 3.1 + flagIndex * height * 0.8;
+          flag.setAttribute("d", `M ${stemX} ${stemTop} Q ${stemX + width * 1.1} ${stemTop + height * 0.55} ${stemX + width * 0.7} ${stemTop + height * 1.45}`);
+          symbol.appendChild(flag);
+        }
+      }
+
+      if (note.dots) {
+        const dot = document.createElementNS(namespace, "circle");
+        dot.setAttribute("cx", String(centerX + width * 0.85));
+        dot.setAttribute("cy", String(centerY));
+        dot.setAttribute("r", String(Math.max(0.75, height * 0.12)));
+        symbol.appendChild(dot);
+      }
+    }
+    overlay.appendChild(symbol);
+  }
+
+  const label = document.createElementNS(namespace, "g");
+  label.classList.add("optimistic-note-label");
+  const labelWidth = Math.max(28, selectedNoteToken(note).length * 6 + 10);
+  const background = document.createElementNS(namespace, "rect");
+  background.setAttribute("x", String(x + width / 2 - labelWidth / 2));
+  background.setAttribute("y", String(y - 17));
+  background.setAttribute("width", String(labelWidth));
+  background.setAttribute("height", "12");
+  background.setAttribute("rx", "4");
+  const text = document.createElementNS(namespace, "text");
+  text.setAttribute("x", String(x + width / 2));
+  text.setAttribute("y", String(y - 8.5));
+  text.setAttribute("text-anchor", "middle");
+  text.textContent = selectedNoteToken(note);
+  label.append(background, text);
+  overlay.appendChild(label);
+  svg.appendChild(overlay);
+
+  return () => {
+    hidden.forEach(({ element, opacity }) => { element.style.opacity = opacity; });
+    overlay.remove();
+  };
+}
 
 function findSourceNote(source: string, href: string, documentId: string): SelectedNote | null {
   const location = href.match(/\.ly:(\d+):(\d+):(\d+)$/);
@@ -231,6 +400,8 @@ export function LilyEditor() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [viewMode, setViewMode] = useState<ViewMode>("score");
   const [selectedNote, setSelectedNote] = useState<SelectedNote | null>(null);
+  const [draggingNote, setDraggingNote] = useState<SelectedNote | null>(null);
+  const [optimisticToken, setOptimisticToken] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const lineRef = useRef<HTMLPreElement>(null);
@@ -238,6 +409,9 @@ export function LilyEditor() {
   const pendingRef = useRef(new Map<string, { resolve: (value: RpcResult) => void; reject: (reason: Error) => void; timer: number }>());
   const compileVersionRef = useRef(0);
   const selectedAnchorRef = useRef<Element | null>(null);
+  const noteDragRef = useRef<NoteDrag | null>(null);
+  const optimisticCleanupRef = useRef<(() => void) | null>(null);
+  const scoreEditRef = useRef(false);
 
   const activeDocument = useMemo(
     () => documents.find((document) => document.id === activeId) ?? documents[0],
@@ -325,6 +499,9 @@ export function LilyEditor() {
       const result = await rpcRender(activeDocument.code, "svg");
       if (version !== compileVersionRef.current) return;
       if (!result.files?.length || !result.files[0].trim()) throw new Error(result.logs || "출력된 악보가 없습니다.");
+      optimisticCleanupRef.current?.();
+      optimisticCleanupRef.current = null;
+      setOptimisticToken("");
       setPages(result.files.map((page) => DOMPurify.sanitize(page, {
         USE_PROFILES: { svg: true, svgFilters: true },
         ALLOW_UNKNOWN_PROTOCOLS: true,
@@ -335,6 +512,9 @@ export function LilyEditor() {
       setCompileState("success");
     } catch (error) {
       if (version !== compileVersionRef.current) return;
+      optimisticCleanupRef.current?.();
+      optimisticCleanupRef.current = null;
+      setOptimisticToken("");
       setLogs(error instanceof Error ? error.message : "컴파일에 실패했습니다.");
       setCompileState("error");
     }
@@ -342,19 +522,39 @@ export function LilyEditor() {
 
   useEffect(() => {
     if (!activeDocument || connection !== "online") return;
-    const timer = window.setTimeout(compile, 850);
+    const delay = scoreEditRef.current ? 90 : 850;
+    scoreEditRef.current = false;
+    const timer = window.setTimeout(compile, delay);
     return () => window.clearTimeout(timer);
   }, [activeDocument, compile, connection]);
 
   const clearSelectedNote = useCallback(() => {
     selectedAnchorRef.current?.classList.remove("is-selected");
     selectedAnchorRef.current = null;
+    noteDragRef.current = null;
+    setDraggingNote(null);
     setSelectedNote(null);
   }, []);
 
+  const clearOptimisticPreview = useCallback(() => {
+    optimisticCleanupRef.current?.();
+    optimisticCleanupRef.current = null;
+    setOptimisticToken("");
+  }, []);
+
+  const showOptimisticPreview = useCallback((fromNote: SelectedNote, note: SelectedNote, verticalSteps: number) => {
+    optimisticCleanupRef.current?.();
+    optimisticCleanupRef.current = null;
+    const anchor = selectedAnchorRef.current;
+    if (!anchor) return;
+    optimisticCleanupRef.current = createOptimisticNotePreview(anchor, fromNote, note, verticalSteps);
+    setOptimisticToken(selectedNoteToken(note));
+  }, []);
+
   useEffect(() => {
+    clearOptimisticPreview();
     clearSelectedNote();
-  }, [activeId, clearSelectedNote]);
+  }, [activeId, clearOptimisticPreview, clearSelectedNote]);
 
   useEffect(() => {
     if (!selectedNote || viewMode === "source") return;
@@ -393,26 +593,37 @@ export function LilyEditor() {
   }, [compile, saveProject]);
 
   const updateCode = (code: string) => {
+    clearOptimisticPreview();
     clearSelectedNote();
     setDocuments((current) => current.map((document) => document.id === activeId ? { ...document, code } : document));
   };
 
-  const replaceSelectedNote = (updates: Partial<Pick<SelectedNote, "base" | "accidental" | "octave" | "duration" | "dots">>) => {
-    if (!selectedNote) return;
-    const documentToEdit = documents.find((document) => document.id === selectedNote.documentId);
-    if (!documentToEdit || documentToEdit.code.slice(selectedNote.start, selectedNote.end) !== selectedNoteToken(selectedNote)) {
+  const commitNoteChange = (
+    note: SelectedNote,
+    updates: Partial<Pick<SelectedNote, "base" | "accidental" | "octave" | "duration" | "dots">>,
+    previewSteps?: number,
+  ) => {
+    const documentToEdit = documents.find((document) => document.id === note.documentId);
+    if (!documentToEdit || documentToEdit.code.slice(note.start, note.end) !== selectedNoteToken(note)) {
+      clearOptimisticPreview();
       clearSelectedNote();
       setToast("소스가 변경되어 음표를 다시 선택해 주세요");
       window.setTimeout(() => setToast(""), 1800);
       return;
     }
 
-    const nextNote = { ...selectedNote, ...updates };
+    const nextNote = { ...note, ...updates };
     const nextToken = selectedNoteToken(nextNote);
-    setDocuments((current) => current.map((document) => document.id === selectedNote.documentId
-      ? { ...document, code: `${document.code.slice(0, selectedNote.start)}${nextToken}${document.code.slice(selectedNote.end)}` }
+    showOptimisticPreview(note, nextNote, previewSteps ?? noteVisualStepDelta(note, nextNote));
+    scoreEditRef.current = true;
+    setDocuments((current) => current.map((document) => document.id === note.documentId
+      ? { ...document, code: `${document.code.slice(0, note.start)}${nextToken}${document.code.slice(note.end)}` }
       : document));
     setSelectedNote({ ...nextNote, end: nextNote.start + nextToken.length });
+  };
+
+  const replaceSelectedNote = (updates: Partial<Pick<SelectedNote, "base" | "accidental" | "octave" | "duration" | "dots">>) => {
+    if (selectedNote) commitNoteChange(selectedNote, updates);
   };
 
   const adjustSelectedOctave = (direction: -1 | 1) => {
@@ -426,31 +637,28 @@ export function LilyEditor() {
   const replaceSelectedWithRest = () => {
     if (!selectedNote) return;
     const rest = `r${selectedNote.duration || "4"}${selectedNote.dots}`;
+    showOptimisticPreview(selectedNote, { ...selectedNote, base: "r" }, 0);
+    scoreEditRef.current = true;
     setDocuments((current) => current.map((document) => document.id === selectedNote.documentId
       ? { ...document, code: `${document.code.slice(0, selectedNote.start)}${rest}${document.code.slice(selectedNote.end)}` }
       : document));
     clearSelectedNote();
   };
 
-  const handleScoreClick = (event: ReactMouseEvent<HTMLDivElement>) => {
-    const target = event.target;
-    if (!(target instanceof Element)) return;
-    const anchor = target.closest("a");
-    if (!anchor) return;
+  const noteFromPointerTarget = (eventTarget: EventTarget | null) => {
+    if (!(eventTarget instanceof Element)) return null;
+    const anchor = eventTarget.closest("a");
+    if (!anchor) return null;
     const href = anchor.getAttribute("href")
       ?? anchor.getAttribute("xlink:href")
       ?? anchor.getAttributeNS("http://www.w3.org/1999/xlink", "href");
-    if (!href?.startsWith("textedit:")) return;
-    event.preventDefault();
-    event.stopPropagation();
-
+    if (!href?.startsWith("textedit:")) return null;
     const note = findSourceNote(activeDocument.code, href, activeDocument.id);
-    if (!note) {
-      setToast("이 기호는 소스 보기에서 직접 편집해 주세요");
-      window.setTimeout(() => setToast(""), 1800);
-      return;
-    }
+    return note ? { anchor, note } : null;
+  };
 
+  const selectPointerNote = (anchor: Element, note: SelectedNote) => {
+    clearOptimisticPreview();
     selectedAnchorRef.current?.classList.remove("is-selected");
     anchor.classList.add("is-selected");
     selectedAnchorRef.current = anchor;
@@ -461,6 +669,41 @@ export function LilyEditor() {
         textareaRef.current?.setSelectionRange(note.start, note.end);
       });
     }
+  };
+
+  const handleScorePointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const target = noteFromPointerTarget(event.target);
+    if (!target) return;
+    event.preventDefault();
+    event.stopPropagation();
+    selectPointerNote(target.anchor, target.note);
+    noteDragRef.current = { pointerId: event.pointerId, startY: event.clientY, note: target.note, steps: 0 };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+
+  const handleScorePointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = noteDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const steps = Math.max(-14, Math.min(14, Math.round((drag.startY - event.clientY) / 6)));
+    if (steps === drag.steps) return;
+    drag.steps = steps;
+    const previewNote = transposeNote(drag.note, steps);
+    setDraggingNote(previewNote);
+    showOptimisticPreview(drag.note, previewNote, steps);
+  };
+
+  const finishScoreDrag = (event: ReactPointerEvent<HTMLDivElement>, cancelled = false) => {
+    const drag = noteDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    noteDragRef.current = null;
+    setDraggingNote(null);
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    if (cancelled || drag.steps === 0) {
+      if (cancelled) clearOptimisticPreview();
+      return;
+    }
+    const nextNote = transposeNote(drag.note, drag.steps);
+    commitNoteChange(drag.note, { base: nextNote.base, octave: nextNote.octave }, drag.steps);
   };
 
   const insertSnippet = (value: string) => {
@@ -539,6 +782,7 @@ music = \relative c' {
     () => Array.from({ length: activeDocument.code.split("\n").length }, (_, index) => index + 1).join("\n"),
     [activeDocument.code],
   );
+  const inspectedNote = draggingNote ?? selectedNote;
 
   return (
     <main className="app-shell">
@@ -614,7 +858,7 @@ music = \relative c' {
 
         {viewMode !== "source" && <section className="preview-pane">
           <div className="pane-header preview-header">
-            <div className="pane-title"><FileMusic size={15} /><strong>악보 미리보기</strong><span>{pages.length || 1} page</span><span className="score-edit-hint"><MousePointer2 size={12} />음표를 클릭해 편집</span></div>
+            <div className="pane-title"><FileMusic size={15} /><strong>악보 미리보기</strong><span>{pages.length || 1} page</span><span className="score-edit-hint"><MousePointer2 size={12} />클릭 또는 위아래 드래그</span></div>
             <div className="preview-actions">
               <button className="icon-button" aria-label="축소" onClick={() => setZoom((value) => Math.max(50, value - 10))}><ZoomOut size={15} /></button>
               <span>{zoom}%</span>
@@ -625,12 +869,12 @@ music = \relative c' {
               </button>
             </div>
           </div>
-          {selectedNote?.documentId === activeId && (
+          {selectedNote?.documentId === activeId && inspectedNote && (
             <aside className="note-inspector" aria-label="선택한 음표 편집">
               <div className="note-inspector-head">
                 <span><MousePointer2 size={13} />선택한 음표</span>
-                <strong>{selectedNoteToken(selectedNote)}</strong>
-                <small>{selectedNote.line}행</small>
+                <strong>{selectedNoteToken(inspectedNote)}</strong>
+                <small>{optimisticToken ? "즉시 반영 · 정밀 조판 중" : `${selectedNote.line}행`}</small>
                 <button aria-label="음표 편집기 닫기" onClick={clearSelectedNote}><X size={14} /></button>
               </div>
               <div className="note-control-row">
@@ -665,7 +909,15 @@ music = \relative c' {
           )}
           <div className="preview-canvas">
             {pages.length ? (
-              <div className="score-pages" style={{ width: `${zoom}%` }} onClick={handleScoreClick}>
+              <div
+                className={`score-pages ${noteDragRef.current ? "is-dragging" : ""}`}
+                style={{ width: `${zoom}%` }}
+                onPointerDown={handleScorePointerDown}
+                onPointerMove={handleScorePointerMove}
+                onPointerUp={(event) => finishScoreDrag(event)}
+                onPointerCancel={(event) => finishScoreDrag(event, true)}
+                onClick={(event) => event.preventDefault()}
+              >
                 {pages.map((page, index) => <article className="score-page" key={`${activeId}-${index}`} dangerouslySetInnerHTML={{ __html: page }} />)}
               </div>
             ) : (
