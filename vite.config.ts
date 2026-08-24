@@ -17,9 +17,10 @@ export default defineConfig({
     ...cloudflare({
       config: {
         name: "weblilypond",
+        main: "./worker/index.ts",
         compatibility_date: "2026-08-24",
         compatibility_flags: ["nodejs_compat"],
-        assets: { not_found_handling: "single-page-application" },
+        assets: { binding: "ASSETS", not_found_handling: "single-page-application" },
         d1_databases: d1 ? [{ binding: d1, database_name: "weblilypond", database_id: "00000000-0000-4000-8000-000000000000" }] : [],
         r2_buckets: r2 ? [{ binding: r2, bucket_name: "weblilypond" }] : [],
       },
