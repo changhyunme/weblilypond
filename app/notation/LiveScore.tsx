@@ -30,9 +30,12 @@ type DragSession = {
   pointerId: number;
   eventId: string;
   group: SVGGElement;
-  label: SVGTextElement | null;
-  baseX: number;
-  baseY: number;
+  ghost: SVGGElement | null;
+  label: SVGGElement | null;
+  labelText: SVGTextElement | null;
+  ghostLedgerLines: SVGLineElement[];
+  note: NoteEvent;
+  noteY: number;
   startSvgY: number;
   latestDeltaY: number;
   snappedSteps: number;
@@ -69,6 +72,14 @@ function accidentalGlyph(accidental: NoteEvent["accidental"]) {
   return null;
 }
 
+function transposedPitchLabel(note: NoteEvent, steps: number) {
+  const absoluteStep = pitchNumber(note) + steps;
+  const pitchIndex = ((absoluteStep % PITCH_NAMES.length) + PITCH_NAMES.length) % PITCH_NAMES.length;
+  const octave = Math.floor(absoluteStep / PITCH_NAMES.length);
+  const accidental = accidentalGlyph(note.accidental) ?? "";
+  return `${PITCH_NAMES[pitchIndex].toUpperCase()}${accidental}${octave}`;
+}
+
 function ledgerOffsets(noteY: number) {
   const offsets: number[] = [];
   if (noteY <= -6 * DIATONIC_STEP) {
@@ -94,7 +105,7 @@ function RestSymbol({ duration, dots }: { duration: string; dots: number }) {
   );
 }
 
-function NoteSymbol({ note, noteY }: { note: NoteEvent; noteY: number }) {
+function NoteSymbol({ note, noteY, showLedger = true }: { note: NoteEvent; noteY: number; showLedger?: boolean }) {
   const hollow = note.duration === "1" || note.duration === "2";
   const stemDown = noteY < 2 * DIATONIC_STEP;
   const hasStem = note.duration !== "1";
@@ -105,7 +116,7 @@ function NoteSymbol({ note, noteY }: { note: NoteEvent; noteY: number }) {
 
   return (
     <g className="live-score__note-symbol" aria-hidden="true">
-      {ledgerOffsets(noteY).map((offset) => (
+      {showLedger && ledgerOffsets(noteY).map((offset) => (
         <line key={offset} className="live-score__ledger" x1={-11} x2={11} y1={offset - noteY} y2={offset - noteY} />
       ))}
       {accidental && <text className="live-score__accidental" x={-16} y={5}>{accidental}</text>}
@@ -131,8 +142,8 @@ function NoteSymbol({ note, noteY }: { note: NoteEvent; noteY: number }) {
 
 export function LiveScore({ score, selectedEventId, onSelectEvent, onChangePitch }: LiveScoreProps) {
   const svgRef = useRef<SVGSVGElement>(null);
-  const groupsRef = useRef(new Map<string, SVGGElement>());
-  const labelsRef = useRef(new Map<string, SVGTextElement>());
+  const ghostsRef = useRef(new Map<string, SVGGElement>());
+  const labelsRef = useRef(new Map<string, SVGGElement>());
   const dragRef = useRef<DragSession | null>(null);
   const frameRef = useRef<number | null>(null);
 
@@ -159,12 +170,32 @@ export function LiveScore({ score, selectedEventId, onSelectEvent, onChangePitch
     frameRef.current = null;
     const drag = dragRef.current;
     if (!drag) return;
-    drag.group.setAttribute("transform", `translate(${drag.baseX} ${drag.baseY + drag.latestDeltaY})`);
+    const snappedDeltaY = -drag.snappedSteps * DIATONIC_STEP;
+    const destinationY = drag.noteY + snappedDeltaY;
+    if (drag.ghost) {
+      drag.ghost.setAttribute("transform", `translate(0 ${snappedDeltaY})`);
+      drag.ghost.style.display = drag.snappedSteps === 0 ? "none" : "block";
+      const ledgers = ledgerOffsets(destinationY);
+      drag.ghostLedgerLines.forEach((line, index) => {
+        const ledgerY = ledgers[index];
+        if (ledgerY === undefined) {
+          line.style.display = "none";
+          return;
+        }
+        const relativeY = ledgerY - destinationY;
+        line.setAttribute("y1", String(relativeY));
+        line.setAttribute("y2", String(relativeY));
+        line.style.display = "block";
+      });
+    }
     if (drag.label) {
-      drag.label.textContent = drag.snappedSteps === 0
-        ? "현재 음정"
-        : `${drag.snappedSteps > 0 ? "+" : ""}${drag.snappedSteps} step`;
+      drag.label.setAttribute("transform", `translate(0 ${snappedDeltaY})`);
       drag.label.style.display = "block";
+    }
+    if (drag.labelText) {
+      const step = drag.snappedSteps;
+      const direction = step > 0 ? "↑" : "↓";
+      drag.labelText.textContent = `${transposedPitchLabel(drag.note, step)} · ${step === 0 ? "현재 음" : `${direction} ${Math.abs(step)}칸`}`;
     }
   };
 
@@ -175,26 +206,37 @@ export function LiveScore({ score, selectedEventId, onSelectEvent, onChangePitch
   const beginNoteDrag = (
     event: ReactPointerEvent<SVGGElement>,
     note: NoteEvent,
-    baseX: number,
-    baseY: number,
+    noteY: number,
   ) => {
-    if (event.button !== 0) return;
+    if (!event.isPrimary || event.button !== 0 || dragRef.current) return;
     event.preventDefault();
     onSelectEvent(note.id);
     event.currentTarget.focus({ preventScroll: true });
-    event.currentTarget.setPointerCapture(event.pointerId);
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    } catch {
+      return;
+    }
+    const ghost = ghostsRef.current.get(note.id) ?? null;
+    const label = labelsRef.current.get(note.id) ?? null;
     dragRef.current = {
       pointerId: event.pointerId,
       eventId: note.id,
       group: event.currentTarget,
-      label: labelsRef.current.get(note.id) ?? null,
-      baseX,
-      baseY,
+      ghost,
+      label,
+      labelText: label?.querySelector<SVGTextElement>(".live-score__drag-label-text") ?? null,
+      ghostLedgerLines: ghost
+        ? Array.from(ghost.querySelectorAll<SVGLineElement>(".live-score__ghost-ledger"))
+        : [],
+      note,
+      noteY,
       startSvgY: clientToSvgY(event.clientY),
       latestDeltaY: 0,
       snappedSteps: 0,
     };
     event.currentTarget.classList.add("is-dragging");
+    paintDragFrame();
   };
 
   const moveNoteDrag = (event: ReactPointerEvent<SVGGElement>) => {
@@ -210,22 +252,28 @@ export function LiveScore({ score, selectedEventId, onSelectEvent, onChangePitch
     const drag = dragRef.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
 
-    drag.latestDeltaY = clientToSvgY(event.clientY) - drag.startSvgY;
-    drag.snappedSteps = Math.max(-28, Math.min(28, Math.round(-drag.latestDeltaY / DIATONIC_STEP)));
+    if (!cancelled) {
+      drag.latestDeltaY = clientToSvgY(event.clientY) - drag.startSvgY;
+      drag.snappedSteps = Math.max(-28, Math.min(28, Math.round(-drag.latestDeltaY / DIATONIC_STEP)));
+    }
     if (frameRef.current !== null) {
       cancelAnimationFrame(frameRef.current);
       frameRef.current = null;
     }
-    paintDragFrame();
     drag.group.classList.remove("is-dragging");
+    if (drag.ghost) drag.ghost.style.display = "none";
     if (drag.label) drag.label.style.display = "none";
-    if (drag.group.hasPointerCapture(event.pointerId)) drag.group.releasePointerCapture(event.pointerId);
     dragRef.current = null;
+    if (drag.group.hasPointerCapture(event.pointerId)) {
+      try {
+        drag.group.releasePointerCapture(event.pointerId);
+      } catch {
+        // A detached or cancelled pointer may already have released capture.
+      }
+    }
 
     if (!cancelled && drag.snappedSteps !== 0) {
       onChangePitch(drag.eventId, drag.snappedSteps);
-    } else {
-      drag.group.setAttribute("transform", `translate(${drag.baseX} ${drag.baseY})`);
     }
   };
 
@@ -324,33 +372,46 @@ export function LiveScore({ score, selectedEventId, onSelectEvent, onChangePitch
                 return (
                   <g
                     key={scoreEvent.id}
-                    ref={(node) => {
-                      if (node) groupsRef.current.set(scoreEvent.id, node);
-                      else groupsRef.current.delete(scoreEvent.id);
-                    }}
                     className={`live-score__event live-score__note ${selectedEventId === scoreEvent.id ? "is-selected" : ""}`}
                     transform={`translate(${x} ${y})`}
                     tabIndex={0}
                     role="button"
                     aria-label={eventAriaLabel(scoreEvent, staff.name)}
-                    onPointerDown={(event) => beginNoteDrag(event, scoreEvent, x, y)}
+                    onPointerDown={(event) => beginNoteDrag(event, scoreEvent, pitchY(scoreEvent, staff.clef))}
                     onPointerMove={moveNoteDrag}
                     onPointerUp={(event) => finishNoteDrag(event)}
                     onPointerCancel={(event) => finishNoteDrag(event, true)}
                     onLostPointerCapture={(event) => finishNoteDrag(event, true)}
                     onKeyDown={(event) => handleNoteKeyDown(event, scoreEvent)}
                   >
-                    <rect className="live-score__hit-target" x={-21} y={-44} width={42} height={70} rx={7} />
+                    <rect className="live-score__hit-target" x={-27} y={-48} width={54} height={92} rx={9} />
                     <NoteSymbol note={scoreEvent} noteY={pitchY(scoreEvent, staff.clef)} />
-                    <text
+                    <g
+                      ref={(node) => {
+                        if (node) ghostsRef.current.set(scoreEvent.id, node);
+                        else ghostsRef.current.delete(scoreEvent.id);
+                      }}
+                      className="live-score__ghost"
+                      aria-hidden="true"
+                    >
+                      <g className="live-score__ghost-ledgers">
+                        {Array.from({ length: 20 }, (_, index) => (
+                          <line key={index} className="live-score__ledger live-score__ghost-ledger" x1={-11} x2={11} />
+                        ))}
+                      </g>
+                      <NoteSymbol note={scoreEvent} noteY={pitchY(scoreEvent, staff.clef)} showLedger={false} />
+                    </g>
+                    <g
                       ref={(node) => {
                         if (node) labelsRef.current.set(scoreEvent.id, node);
                         else labelsRef.current.delete(scoreEvent.id);
                       }}
                       className="live-score__drag-label"
-                      x={15}
-                      y={-18}
-                    />
+                      aria-hidden="true"
+                    >
+                      <rect x={14} y={-33} width={106} height={19} rx={9.5} />
+                      <text className="live-score__drag-label-text" x={21} y={-20} />
+                    </g>
                   </g>
                 );
               })}

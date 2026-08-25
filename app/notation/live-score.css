@@ -7,6 +7,7 @@
     radial-gradient(circle at 18% 0%, rgba(171, 137, 86, 0.1), transparent 28%),
     #e9e5de;
   box-sizing: border-box;
+  overscroll-behavior: contain;
 }
 
 .live-score__page {
@@ -17,7 +18,7 @@
   color: #181715;
   filter: drop-shadow(0 15px 24px rgba(38, 31, 22, 0.14));
   user-select: none;
-  touch-action: none;
+  touch-action: pan-x pan-y;
 }
 
 .live-score__paper {
@@ -125,6 +126,7 @@
 .live-score__note {
   cursor: ns-resize;
   will-change: transform;
+  touch-action: none;
 }
 
 .live-score__event:focus-visible .live-score__hit-target,
@@ -137,17 +139,21 @@
 
 .live-score__event.is-dragging {
   cursor: grabbing;
-  filter: drop-shadow(0 4px 3px rgba(79, 39, 18, 0.24));
 }
 
 .live-score__event.is-dragging .live-score__hit-target {
   fill: rgba(190, 96, 53, 0.16);
 }
 
+.live-score__event.is-dragging > .live-score__note-symbol {
+  opacity: 0.48;
+}
+
 .live-score__hit-target {
   fill: transparent;
   stroke: transparent;
   vector-effect: non-scaling-stroke;
+  pointer-events: all;
 }
 
 .live-score__note-symbol ellipse,
@@ -191,8 +197,31 @@
   text-anchor: middle;
 }
 
+.live-score__ghost {
+  display: none;
+  color: #b24f27;
+  opacity: 0.72;
+  filter: drop-shadow(0 3px 2px rgba(84, 38, 17, 0.22));
+  pointer-events: none;
+}
+
+.live-score__ghost-ledger {
+  display: none;
+}
+
 .live-score__drag-label {
   display: none;
+  pointer-events: none;
+}
+
+.live-score__drag-label rect {
+  fill: #fff8f1;
+  stroke: #b85d34;
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.live-score__drag-label-text {
   paint-order: stroke;
   fill: #9c4826;
   stroke: #fffefb;
@@ -201,7 +230,6 @@
   font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
   font-size: 10px;
   font-weight: 750;
-  pointer-events: none;
 }
 
 .live-score__empty {
@@ -217,6 +245,12 @@
 
   .live-score__page {
     min-width: 620px;
+  }
+}
+
+@media (pointer: coarse) {
+  .live-score__hit-target {
+    stroke-width: 18px;
   }
 }
 
